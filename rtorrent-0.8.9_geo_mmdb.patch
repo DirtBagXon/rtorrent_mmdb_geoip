@@ -211,6 +211,13 @@ diff -ru rtorrent-0.8.9/src/command_peer.cc rtorrent-0.8.9-1/src/command_peer.cc
 +
 +    asnum = MK_NA(num);
 +    asname = MK_NA(name);
++
++    if (num != NULL)
++        free(num);
++
++    if (name != NULL)
++        free(name);
++
 +    return "AS" + asnum + "; " + asname;
 +}
 +
