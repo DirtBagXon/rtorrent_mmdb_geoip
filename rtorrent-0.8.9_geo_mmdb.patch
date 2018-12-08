@@ -50,7 +50,7 @@ diff -ru rtorrent-0.8.9/src/command_peer.cc rtorrent-0.8.9-1/src/command_peer.cc
  torrent::Object
  retrieve_p_id(torrent::Peer* peer) {
    const torrent::HashString* hashString = &peer->id();
-@@ -78,6 +85,167 @@
+@@ -78,6 +92,174 @@
  }
  
  torrent::Object
