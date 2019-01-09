@@ -1,4 +1,4 @@
-# rtorrent_mmdb_geoip
+# rtorrent_mmdb_geoip2
 Adds Maxmind MMDB functionality to rtorrent client for enhanced detail on remote peer addresses.
 
 #### For use with Free Maxmind GeoLite MMDB databases
