@@ -1,0 +1,710 @@
+diff -ruN rtorrent-0.9.6/rak/socket_address.h rtorrent-0.9.6-geo/rak/socket_address.h
+--- rtorrent-0.9.6/rak/socket_address.h	2015-08-08 16:40:41.000000000 +0100
++++ rtorrent-0.9.6-geo/rak/socket_address.h	2020-03-09 20:56:33.315856350 +0000
+@@ -87,6 +87,7 @@
+   sa_family_t         family() const                          { return m_sockaddr.sa_family; }
+   void                set_family()                            { m_sockaddr.sa_family = af_unspec; }
+ 
++  in_addr             address() const;
+   uint16_t            port() const;
+   void                set_port(uint16_t p);
+ 
+@@ -268,6 +269,16 @@
+   }
+ }
+ 
++inline in_addr
++socket_address::address() const {
++  switch (family()) {
++  case af_inet:
++    return sa_inet()->address();
++  default:
++    throw std::logic_error("socket_address(...) received an unsupported protocol family.");
++  }
++}
++
+ inline uint16_t
+ socket_address::port() const {
+   switch (family()) {
+diff -ruN rtorrent-0.9.6/src/command_peer.cc rtorrent-0.9.6-geo/src/command_peer.cc
+--- rtorrent-0.9.6/src/command_peer.cc	2015-09-03 20:03:30.000000000 +0100
++++ rtorrent-0.9.6-geo/src/command_peer.cc	2020-03-09 21:02:17.434763343 +0000
+@@ -46,6 +46,10 @@
+ #include <torrent/peer/peer.h>
+ #include <torrent/peer/peer_info.h>
+ 
++#include <sstream>
++#include <maxminddb.h>
++#include "core/geo_functions.h"
++
+ #include "core/manager.h"
+ #include "display/utils.h"
+ 
+@@ -53,6 +57,9 @@
+ #include "control.h"
+ #include "command_helpers.h"
+ 
++#define GEOIP_IP_NOT_FOUND "(IP Address not found)"
++#define MK_NA(p) (p ? p : "N/A")
++
+ torrent::Object
+ retrieve_p_id(torrent::Peer* peer) {
+   const torrent::HashString* hashString = &peer->id();
+@@ -78,6 +85,174 @@
+ }
+ 
+ torrent::Object
++retrieve_p_country(torrent::Peer* peer) {
++
++  int gi = control->core()->mmdb_baddb();
++
++  if (gi) {
++  	return "(Country DB not available)";
++  }
++
++  std::string country_code;
++  std::string country_name;
++  std::string country_continent;
++
++  MMDB_s *mmdb_handle = control->core()->mmdb_handle();
++  //MMDB_s *mmdb_handle = get_handle();
++
++  const char *countrycode_lookup[] = {"country", "iso_code", NULL};
++  const char *country_lookup[] = {"country", "names", "en", NULL};
++  const char *continent_lookup[]   = {"continent", "names", "en", NULL};
++  char *ip = inet_ntoa(rak::socket_address::cast_from(peer->peer_info()->socket_address())->address());
++
++  const char *cc = geo_lookup(ip, countrycode_lookup);
++  
++  if(cc == NULL) {
++    return GEOIP_IP_NOT_FOUND;
++  } else {
++    country_code = MK_NA(cc);
++    const char *cn = geo_lookup(ip, country_lookup);;
++    const char *con = geo_lookup(ip, continent_lookup);;
++    country_name = MK_NA(cn);
++    country_continent = MK_NA(con);
++    return country_continent + "; " + country_code + ", " + country_name;
++  }
++}
++
++torrent::Object
++retrieve_p_city(torrent::Peer* peer) {
++
++  int gi = control->core()->mmdb_baddb();
++
++  if (gi) {
++  	return "(City DB not available)";
++  }
++
++  std::string city;
++  std::string state;
++  std::string province;
++  std::string longitude;
++  std::string latitude;
++
++  MMDB_s *mmdb_handle = control->core()->mmdb_handle();
++  //MMDB_s *mmdb_handle = get_handle();
++
++  const char *city_lookup[]    = {"city", "names", "en", NULL};
++  const char *state_lookup[]   = {"subdivisions", "0", "iso_code", NULL};
++  const char *province_lookup[]   = {"subdivisions", "0", "names", "en", NULL};
++  const char *longitude_lookup[]   = {"location", "longitude", NULL};
++  const char *latitude_lookup[]   = {"location", "latitude", NULL};
++  char *ip = inet_ntoa(rak::socket_address::cast_from(peer->peer_info()->socket_address())->address());
++
++  const char *ct = geo_lookup(ip, city_lookup);
++
++  if(ct == NULL) {
++    return GEOIP_IP_NOT_FOUND;
++  } else {
++    city = MK_NA(ct);
++    const char *st = geo_lookup(ip, state_lookup);
++    const char *pr = geo_lookup(ip, province_lookup);
++    const char *lat = geo_lookup(ip, latitude_lookup);
++    const char *lon = geo_lookup(ip, longitude_lookup);
++    state = MK_NA(st);
++    province = MK_NA(pr);
++    latitude = MK_NA(lat);
++    longitude = MK_NA(lon);
++    return city + "; " + state + ", " + province + ", " + latitude + ", " + longitude;
++  }
++}
++
++torrent::Object
++retrieve_p_asnum(torrent::Peer* peer) {
++
++  char *num = NULL;
++  char *name   = NULL;
++  std::string asnum;
++  std::string asname;
++  const char* MMDB_AS_PATH = MAX_AS_DB;
++
++  MMDB_s asmmdb;
++  const char *asnum_lookup[] = {"autonomous_system_number", NULL};
++  const char *asname_lookup[]   = {"autonomous_system_organization", NULL};
++  char *ip_address = inet_ntoa(rak::socket_address::cast_from(peer->peer_info()->socket_address())->address());
++
++  int baddb = MMDB_open(MMDB_AS_PATH, MMDB_MODE_MMAP, &asmmdb);
++
++  if (baddb != MMDB_SUCCESS) {
++      #ifdef DEBUG
++      fprintf(stderr, "[ERROR] open_mmdb: Can't open %s - %s\n",
++             MMDB_AS_PATH, MMDB_strerror(baddb));
++      if (MMDB_IO_ERROR == baddb) {
++          fprintf(stderr, "[ERROR] open_mmdb: IO error: %s\n", strerror(baddb));
++      }
++      #endif
++      return "(ASNum DB not available)";
++  }
++
++  int asgai_error, asmmdb_error;
++  MMDB_lookup_result_s asresult = MMDB_lookup_string(&asmmdb, ip_address, &asgai_error, &asmmdb_error);
++
++  if (0 != asgai_error) {
++      #ifdef DEBUG
++          fprintf(stderr, "\n  Error from ASNum getaddrinfo for %s - %s\n\n", ip_address, gai_strerror(asgai_error));
++      #endif
++      return "(Error from ASNum getaddrinfo)";
++  }
++
++  if (MMDB_SUCCESS != asmmdb_error) {
++      #ifdef DEBUG
++          fprintf(stderr, "\n  Got an error from ASNum libmaxminddb: %s\n\n", MMDB_strerror(asmmdb_error));
++      #endif
++      return "(Error from ASNum libmaxminddb)";
++  }
++
++  MMDB_entry_data_list_s *asentry_data_list = NULL;
++
++  if (asresult.found_entry) {
++
++    int asstatus = MMDB_get_entry_data_list(&asresult.entry, &asentry_data_list);
++
++    if (MMDB_SUCCESS != asstatus) {
++	    /*
++            #ifdef DEBUG
++	      fprintf( stderr, "Got an error in LOOKUP for ASNum entry data - %s\n", MMDB_strerror(asstatus));
++            #endif
++	    */
++	    goto end;
++        }
++
++        if (NULL != asentry_data_list) {
++
++            num = get_value(&asresult, asnum_lookup);
++            name = get_value(&asresult, asname_lookup);
++        }
++
++    } else {
++	    /*
++            #ifdef DEBUG
++	      fprintf( stderr, "\n  No AS entry for this IP address (%s) was found\n\n", ip_address);
++            #endif
++	    */
++	    goto end;
++    }
++
++    end:
++        MMDB_free_entry_data_list(asentry_data_list);
++        MMDB_close(&asmmdb);
++
++    asnum = MK_NA(num);
++    asname = MK_NA(name);
++
++    if (num != NULL)
++        free(num);
++
++    if (name != NULL)
++        free(name);
++
++    return "AS" + asnum + "; " + asname;
++}
++
++torrent::Object
+ retrieve_p_client_version(torrent::Peer* peer) {
+   char buf[128];
+   display::print_client_version(buf, buf + 128, peer->peer_info()->client_info());
+@@ -114,6 +289,10 @@
+   CMD2_PEER("p.address",           tr1::bind(&retrieve_p_address, tr1::placeholders::_1));
+   CMD2_PEER("p.port",              tr1::bind(&retrieve_p_port, tr1::placeholders::_1));
+ 
++  CMD2_PEER("p.country",           std::bind(&retrieve_p_country, std::placeholders::_1));
++  CMD2_PEER("p.city",              std::bind(&retrieve_p_city, std::placeholders::_1));
++  CMD2_PEER("p.asnum",             std::bind(&retrieve_p_asnum, std::placeholders::_1));
++
+   CMD2_PEER("p.completed_percent", tr1::bind(&retrieve_p_completed_percent, tr1::placeholders::_1));
+ 
+   CMD2_PEER("p.up_rate",           tr1::bind(&torrent::Rate::rate,  tr1::bind(&torrent::Peer::up_rate, tr1::placeholders::_1)));
+diff -ruN rtorrent-0.9.6/src/core/geo_functions.cc rtorrent-0.9.6-geo/src/core/geo_functions.cc
+--- rtorrent-0.9.6/src/core/geo_functions.cc	1970-01-01 01:00:00.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/geo_functions.cc	2020-03-09 20:56:33.315856350 +0000
+@@ -0,0 +1,183 @@
++#include <stdlib.h>
++#include <string.h>
++#include <maxminddb.h>
++#include "geo_functions.h"
++
++#ifndef DEBUG
++#define DEBUG 0
++#endif
++
++static MMDB_s mmdb_handle;
++static int    mmdb_baddb;
++
++const char* MMDB_CITY_PATH = MAX_CITY_DB;
++
++MMDB_s *
++get_handle() 
++{
++    return &mmdb_handle;
++}
++
++void close_mmdb(void *db) 
++{
++    // don't do anything if the dbs didn't open correctly.
++    if (mmdb_baddb){
++        #ifdef DEBUG
++       	    fprintf(stderr, "BADDB set, not closing MMDB\n\n");
++        #endif
++        return;
++    }
++
++    MMDB_s *handle = (MMDB_s *)db;
++    MMDB_close(handle);
++}
++
++// Open the maxmind City db file
++int
++open_mmdb(MMDB_s *mmdb) {
++    mmdb_baddb = MMDB_open(MMDB_CITY_PATH, MMDB_MODE_MMAP, mmdb);
++    if (mmdb_baddb != MMDB_SUCCESS) {
++        #ifdef DEBUG
++        fprintf(stderr, "[ERROR] open_mmdb: Can't open %s - %s\n",
++                MMDB_CITY_PATH, MMDB_strerror(mmdb_baddb));
++        if (MMDB_IO_ERROR == mmdb_baddb) {
++            fprintf(stderr, "[ERROR] open_mmdb: IO error: %s\n", strerror(mmdb_baddb));
++        }
++        #endif
++        return 1;
++    }
++    return 0;
++}
++
++
++const char * geo_lookup(const char *ipstr, const char **lookup_path) 
++{
++    char *data = NULL;
++
++    if (mmdb_baddb) {
++        #ifdef DEBUG
++        	fprintf(stderr, "BADDB found on lookup\n\n");
++        #endif
++        return NULL;
++    }
++
++    // Lookup IP in the DB
++    int gai_error, mmdb_error;
++    MMDB_lookup_result_s result =
++        MMDB_lookup_string(&mmdb_handle, ipstr, &gai_error, &mmdb_error);
++    
++    if (0 != gai_error) {
++        #ifdef DEBUG
++        fprintf(stderr,
++                "[INFO] Error from getaddrinfo for %s - %s\n\n",
++                ipstr, gai_strerror(gai_error));
++        #endif
++        return NULL;
++    }
++
++
++    if (MMDB_SUCCESS != mmdb_error) {
++        #ifdef DEBUG
++        fprintf(stderr,
++                "[ERROR] Got an error from libmaxminddb: %s\n\n",
++                MMDB_strerror(mmdb_error));
++        #endif
++        return NULL;
++    }
++
++    // Parse results
++    MMDB_entry_data_s entry_data;
++    int exit_code = 0;
++    char* str = NULL;
++    if (result.found_entry) {
++        int status = MMDB_aget_value(&result.entry, &entry_data, lookup_path);
++        
++        if (MMDB_SUCCESS != status) {
++
++    		/*		
++        	#ifdef DEBUG
++        		fprintf(stderr, "LOOKUP path doesn't match entry type\n\n");
++        	#endif
++		*/
++
++	    return NULL;
++        }
++
++        if (entry_data.has_data) {
++            switch(entry_data.type){
++            case MMDB_DATA_TYPE_UTF8_STRING:
++                data = strndup(entry_data.utf8_string, entry_data.data_size);
++                break;
++            case MMDB_DATA_TYPE_UINT16:
++                data = (char *)malloc(entry_data.data_size);
++                sprintf(data, "%u", entry_data.uint16);
++                break;
++	    case MMDB_DATA_TYPE_UINT32:
++            	data = (char *)malloc(entry_data.data_size);
++            	sprintf(data, "%u", entry_data.uint32);
++            	break;
++            case MMDB_DATA_TYPE_DOUBLE:
++                asprintf(&data, "%f", entry_data.double_value);
++                break;
++            default:
++                #ifdef DEBUG
++                fprintf(
++                        stderr,
++                        "[WARN] No handler for entry data type (%d) was found\n",
++                        entry_data.type);
++                #endif
++                exit_code = 1;
++                break;
++            }
++        }
++
++    } else {
++	// no entry found
++	return NULL;
++    }
++
++    if (exit_code != 0) {
++        data = (char *)calloc(1, sizeof(char));
++    }
++    return data;
++}
++
++ 
++char * get_value(MMDB_lookup_result_s *result, const char **path) {
++
++    MMDB_entry_data_s entry_data;
++    int status  = MMDB_aget_value( &(*result).entry, &entry_data, path);
++    char *value = NULL;
++
++    if (MMDB_SUCCESS != status) {
++        return NULL;
++    }
++    
++    if (entry_data.has_data) {
++        switch(entry_data.type) {           
++        case MMDB_DATA_TYPE_UTF8_STRING:
++            value = strndup(entry_data.utf8_string, entry_data.data_size);
++            break;
++        case MMDB_DATA_TYPE_UINT16:
++            value = (char *)malloc(entry_data.data_size);
++            sprintf(value, "%u", entry_data.uint16);
++            break;
++	case MMDB_DATA_TYPE_UINT32:
++            value = (char *)malloc(entry_data.data_size);
++            sprintf(value, "%u", entry_data.uint32);
++            break;
++        case MMDB_DATA_TYPE_DOUBLE:
++            asprintf(&value, "%f", entry_data.double_value);
++            break;
++        default:
++            #ifdef DEBUG
++            fprintf(
++                    stderr,
++                    "[WARN] get_value: No handler for entry data type (%d) was found. \n",
++                    entry_data.type);
++            #endif
++            break;
++        }
++    }
++    return value;
++}
+diff -ruN rtorrent-0.9.6/src/core/geo_functions.h rtorrent-0.9.6-geo/src/core/geo_functions.h
+--- rtorrent-0.9.6/src/core/geo_functions.h	1970-01-01 01:00:00.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/geo_functions.h	2020-03-09 20:56:33.315856350 +0000
+@@ -0,0 +1,26 @@
++#include <maxminddb.h>
++
++#ifndef MAX_CITY_DB
++#define MAX_CITY_DB "/usr/share/GeoIP/GeoLite2-City.mmdb"
++#endif
++
++#ifndef MAX_AS_DB
++#define MAX_AS_DB "/usr/share/GeoIP/GeoLite2-ASN.mmdb"
++#endif
++
++MMDB_s *
++get_handle(void);
++
++void 
++close_mmdb(void *);
++
++// function to open the maxmind db once
++int 
++open_mmdb(MMDB_s *);
++
++// function to get a value from the returned mmdb lookup
++char *
++get_value(MMDB_lookup_result_s *, const char **);
++
++const char *
++geo_lookup(const char *ipstr, const char **lookup_path);
+diff -ruN rtorrent-0.9.6/src/core/Makefile.am rtorrent-0.9.6-geo/src/core/Makefile.am
+--- rtorrent-0.9.6/src/core/Makefile.am	2015-08-08 16:40:41.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/Makefile.am	2020-03-09 20:56:33.315856350 +0000
+@@ -7,6 +7,8 @@
+ 	curl_socket.h \
+ 	curl_stack.cc \
+ 	curl_stack.h \
++	geo_functions.cc \
++	geo_functions.h \
+ 	dht_manager.cc \
+ 	dht_manager.h \
+ 	download.cc \
+diff -ruN rtorrent-0.9.6/src/core/Makefile.in rtorrent-0.9.6-geo/src/core/Makefile.in
+--- rtorrent-0.9.6/src/core/Makefile.in	2015-09-03 20:20:59.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/Makefile.in	2020-03-09 20:59:25.679314173 +0000
+@@ -111,7 +111,7 @@
+ 	curl_stack.$(OBJEXT) dht_manager.$(OBJEXT) download.$(OBJEXT) \
+ 	download_factory.$(OBJEXT) download_list.$(OBJEXT) \
+ 	download_store.$(OBJEXT) http_queue.$(OBJEXT) \
+-	manager.$(OBJEXT) poll_manager.$(OBJEXT) view.$(OBJEXT) \
++	geo_functions.$(OBJEXT) manager.$(OBJEXT) poll_manager.$(OBJEXT) view.$(OBJEXT) \
+ 	view_manager.$(OBJEXT)
+ libsub_core_a_OBJECTS = $(am_libsub_core_a_OBJECTS)
+ AM_V_P = $(am__v_P_@AM_V@)
+@@ -339,6 +339,8 @@
+ 	curl_socket.h \
+ 	curl_stack.cc \
+ 	curl_stack.h \
++	geo_functions.cc \
++	geo_functions.h \
+ 	dht_manager.cc \
+ 	dht_manager.h \
+ 	download.cc \
+diff -ruN rtorrent-0.9.6/src/core/manager.cc rtorrent-0.9.6-geo/src/core/manager.cc
+--- rtorrent-0.9.6/src/core/manager.cc	2015-09-03 20:03:30.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/manager.cc	2020-03-09 21:00:14.615160230 +0000
+@@ -61,6 +61,9 @@
+ #include "utils/directory.h"
+ #include "utils/file_status_cache.h"
+ 
++#include <maxminddb.h>
++#include "geo_functions.h"
++
+ #include "globals.h"
+ #include "curl_get.h"
+ #include "control.h"
+@@ -82,6 +85,7 @@
+ 
+ Manager::Manager() :
+   m_hashingView(NULL),
++  m_mmdb_handle(),
+   m_log_important(torrent::log_open_log_buffer("important")),
+   m_log_complete(torrent::log_open_log_buffer("complete"))
+ {
+@@ -94,6 +98,8 @@
+   torrent::Throttle* unthrottled = torrent::Throttle::create_throttle();
+   unthrottled->set_max_rate(0);
+   m_throttles["NULL"] = std::make_pair(unthrottled, unthrottled);
++
++  init_gi();
+ }
+ 
+ Manager::~Manager() {
+@@ -105,6 +111,8 @@
+   delete m_downloadStore;
+   delete m_httpQueue;
+   delete m_fileStatusCache;
++
++  delete_gi();
+ }
+ 
+ void
+@@ -506,4 +514,26 @@
+   }
+ }
+ 
++void Manager::init_gi(void) {
++  std::ostringstream msg;
++  msg << "Opening Geo MMDB database: ";
++
++  MMDB_s *m_mmdb_handle = get_handle();
++  int m_mmdb_baddb = open_mmdb(m_mmdb_handle);
++  if (m_mmdb_baddb) {
++        (void *)m_mmdb_handle;
++        close_mmdb;
++  	msg << "Failed";
++  } else {
++  	msg << "Success";
++  }
++
++  msg << "." << std::endl;
++  push_log(msg.str().c_str());
++}
++
++void Manager::delete_gi(void) {
++  close_mmdb;
++}
++
+ }
+diff -ruN rtorrent-0.9.6/src/core/manager.h rtorrent-0.9.6-geo/src/core/manager.h
+--- rtorrent-0.9.6/src/core/manager.h	2015-09-03 20:03:30.000000000 +0100
++++ rtorrent-0.9.6-geo/src/core/manager.h	2020-03-09 21:00:53.111039129 +0000
+@@ -43,6 +43,8 @@
+ #include <torrent/utils/log_buffer.h>
+ #include <torrent/connection_manager.h>
+ 
++#include <maxminddb.h>
++
+ #include "download_list.h"
+ #include "poll_manager.h"
+ #include "range_map.h"
+@@ -88,6 +90,9 @@
+   torrent::log_buffer* log_important()                    { return m_log_important; }
+   torrent::log_buffer* log_complete()                     { return m_log_complete; }
+ 
++  MMDB_s              *mmdb_handle()                      { return m_mmdb_handle; }
++  int                 mmdb_baddb()                        { return m_mmdb_baddb; }
++
+   ThrottleMap&          throttles()                       { return m_throttles; }
+   torrent::ThrottlePair get_throttle(const std::string& name);
+ 
+@@ -141,6 +146,12 @@
+   void                receive_http_failed(std::string msg);
+   void                receive_hashing_changed();
+ 
++  void                init_gi();
++  void                delete_gi();
++
++  MMDB_s              *m_mmdb_handle;
++  int                 m_mmdb_baddb;
++
+   DownloadList*       m_downloadList;
+   DownloadStore*      m_downloadStore;
+   FileStatusCache*    m_fileStatusCache;
+diff -ruN rtorrent-0.9.6/src/display/window_peer_list.cc rtorrent-0.9.6-geo/src/display/window_peer_list.cc
+--- rtorrent-0.9.6/src/display/window_peer_list.cc	2015-08-08 16:40:41.000000000 +0100
++++ rtorrent-0.9.6-geo/src/display/window_peer_list.cc	2020-03-09 20:56:33.343856261 +0000
+@@ -47,9 +47,14 @@
+ #include "core/download.h"
+ #include "rak/algorithm.h"
+ 
++#include <maxminddb.h>
++#include "../core/geo_functions.h"
++
+ #include "canvas.h"
+ #include "utils.h"
+ #include "window_peer_list.h"
++#include "control.h"
++#include "core/manager.h"
+ 
+ namespace display {
+ 
+@@ -57,8 +62,10 @@
+   Window(new Canvas, 0, 0, 0, extent_full, extent_full),
+   m_download(d),
+   m_list(l),
+-  m_focus(f) {
+-}
++  m_focus(f),
++  gi() {
++    gi = control->core()->mmdb_baddb();
++  }
+ 
+ void
+ WindowPeerList::redraw() {
+@@ -69,6 +76,7 @@
+   int y = 0;
+ 
+   m_canvas->print(x, y, "IP");     x += 16;
++  m_canvas->print(x, y, "CC");      x += 7;
+   m_canvas->print(x, y, "UP");      x += 7;
+   m_canvas->print(x, y, "DOWN");    x += 7;
+   m_canvas->print(x, y, "PEER");    x += 7;
+@@ -104,6 +112,17 @@
+                     rak::socket_address::cast_from(p->address())->address_str().c_str());
+     x += 18;
+ 
++    if (gi) {
++	      m_canvas->print(x, y, "--");
++	    } else {
++	      MMDB_s *mmdb = control->core()->mmdb_handle();
++	      const char *lookup_path[] = {"country", "iso_code", NULL};
++	      char *ip = inet_ntoa(rak::socket_address::cast_from(p->address())->address());
++	      const char *cc = geo_lookup(ip, lookup_path);
++	      m_canvas->print(x, y, "%s", cc ? cc : "--");
++	    }
++    x += 7;
++
+     m_canvas->print(x, y, "%.1f", (double)p->up_rate()->rate() / 1024); x += 7;
+     m_canvas->print(x, y, "%.1f", (double)p->down_rate()->rate() / 1024); x += 7;
+     m_canvas->print(x, y, "%.1f", (double)p->peer_rate()->rate() / 1024); x += 7;
+diff -ruN rtorrent-0.9.6/src/display/window_peer_list.h rtorrent-0.9.6-geo/src/display/window_peer_list.h
+--- rtorrent-0.9.6/src/display/window_peer_list.h	2015-08-08 16:40:41.000000000 +0100
++++ rtorrent-0.9.6-geo/src/display/window_peer_list.h	2020-03-09 20:56:33.343856261 +0000
+@@ -63,6 +63,8 @@
+ 
+   PList*           m_list;
+   PList::iterator* m_focus;
++
++  int             gi;
+ };
+ 
+ }
+diff -ruN rtorrent-0.9.6/src/Makefile.am rtorrent-0.9.6-geo/src/Makefile.am
+--- rtorrent-0.9.6/src/Makefile.am	2015-08-08 16:40:41.000000000 +0100
++++ rtorrent-0.9.6-geo/src/Makefile.am	2020-03-09 21:03:14.762566183 +0000
+@@ -48,6 +48,7 @@
+ 	input/libsub_input.a \
+ 	rpc/libsub_rpc.a \
+ 	utils/libsub_utils.a \
++	-lmaxminddb \
+ 	@PTHREAD_LIBS@
+ 
+ rtorrent_SOURCES = \
+diff -ruN rtorrent-0.9.6/src/Makefile.in rtorrent-0.9.6-geo/src/Makefile.in
+--- rtorrent-0.9.6/src/Makefile.in	2015-09-03 20:20:59.000000000 +0100
++++ rtorrent-0.9.6-geo/src/Makefile.in	2020-03-09 21:03:55.518426155 +0000
+@@ -434,6 +434,7 @@
+ 	input/libsub_input.a \
+ 	rpc/libsub_rpc.a \
+ 	utils/libsub_utils.a \
++	-lmaxminddb \
+ 	@PTHREAD_LIBS@
+ 
+ rtorrent_SOURCES = \
+diff -ruN rtorrent-0.9.6/src/thread_base.cc rtorrent-0.9.6-geo/src/thread_base.cc
+--- rtorrent-0.9.6/src/thread_base.cc	2015-09-03 20:03:30.000000000 +0100
++++ rtorrent-0.9.6-geo/src/thread_base.cc	2020-03-09 20:56:33.343856261 +0000
+@@ -37,6 +37,9 @@
+ #include "config.h"
+ 
+ #include "thread_base.h"
++#include <unistd.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #include <cassert>
+ #include <cstdlib>
+diff -ruN rtorrent-0.9.6/src/ui/element_peer_list.cc rtorrent-0.9.6-geo/src/ui/element_peer_list.cc
+--- rtorrent-0.9.6/src/ui/element_peer_list.cc	2015-09-03 20:03:30.000000000 +0100
++++ rtorrent-0.9.6-geo/src/ui/element_peer_list.cc	2020-03-09 20:56:33.347856249 +0000
+@@ -109,6 +109,13 @@
+ 
+   element->push_back("");
+   element->push_column("Address:",   te_command("cat=$p.address=,:,$p.port="));
++  
++  element->push_back("");
++  element->push_column("Country:",   te_command("p.country="));
++  element->push_column("City:",      te_command("p.city="));
++  element->push_column("AS Number:", te_command("p.asnum="));
++  element->push_back("");
++
+   element->push_column("Id:",        te_command("p.id_html="));
+   element->push_column("Client:",    te_command("p.client_version="));
+   element->push_column("Options:",   te_command("p.options_str="));
