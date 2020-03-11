@@ -37,3 +37,6 @@ Expected DB locations defined in '_geo_functions.h_':
 
 **Note:** The 0.8.9 patch contains a '_range_map.h_' backport patch, which is required for this changeset. 
 - '_range_map.h_' will fail to merge where this patch has already been applied.
+
+
+Example usage in: https://github.com/DirtBagXon/rtorrent
